@@ -191,6 +191,53 @@ int main() {
 └─────────────────────────────────────────────────────────────┘
 ```
 
+### 8. Claude Code Uses Bun Runtime — Must Intercept openat()
+
+As of v2.x, Claude Code ships as a native Mach-O binary compiled with [Bun](https://bun.sh/) (not Node.js). This has two implications:
+
+**Hardened runtime blocks DYLD_INSERT_LIBRARIES:**
+The binary is signed with `flags=0x10000(runtime)` (hardened runtime) but without the `com.apple.security.cs.allow-dyld-environment-variables` entitlement. macOS silently strips `DYLD_INSERT_LIBRARIES` before the process starts.
+
+**Fix**: Re-sign a local copy with the entitlement added (see `scripts/claude-resign`).
+
+**Bun uses `openat$NOCANCEL` not `open()`:**
+Unlike Node.js which uses `open()`, Bun's I/O layer calls `openat$NOCANCEL` to open files. This is a separate symbol from both `open` and `openat`. Interposing only `open()` and `openat()` misses all Bun file opens.
+
+**Discovery**: Check which open variants a binary imports:
+```bash
+nm -u /path/to/binary | grep open
+# _open
+# _openat
+# _openat$NOCANCEL   <-- this is what Bun uses
+```
+
+**Fix**: Interpose `openat$NOCANCEL` using `__asm__` to reference the `$` symbol:
+```c
+/* Declare the external symbol with asm label for the $ variant */
+extern int openat_nocancel(int, const char *, int, ...) __asm__("_openat$NOCANCEL");
+
+/* Use __openat_nocancel for the real function via dlsym */
+real_openat_nocancel = dlsym(RTLD_DEFAULT, "__openat_nocancel");
+
+int my_openat_nocancel(int dirfd, const char *pathname, int flags, ...) {
+    int fd = real_openat_nocancel(dirfd, pathname, flags, mode);
+    if (should_filter_path(pathname)) {
+        log_msg("Tracking: %s (fd=%d, via openat$NOCANCEL)", pathname, fd);
+    }
+    return fd;
+}
+DYLD_INTERPOSE(my_openat_nocancel, openat_nocancel)
+```
+
+**How to tell it's Bun:**
+```bash
+file ~/.local/bin/claude
+# Mach-O 64-bit executable arm64  (not a script with #!/usr/bin/env node)
+
+# Binary contains __BUN segment
+otool -l ~/.local/bin/claude | grep -i bun
+```
+
 ## Path Matching Issues
 
 ### 6. Cache Directories Cause False Positives (2026-02-04)

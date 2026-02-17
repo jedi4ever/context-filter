@@ -109,11 +109,34 @@ if head -1 "$CLAUDE_BIN" 2>/dev/null | grep -q '/usr/bin/env'; then
     echo -e "${YELLOW}Warning: Could not find direct node path, trying anyway...${NC}" >&2
 fi
 
+# Check if binary has hardened runtime without DYLD entitlement
+REAL_BIN="$CLAUDE_BIN"
+if [ -L "$CLAUDE_BIN" ]; then
+    REAL_BIN="$(readlink -f "$CLAUDE_BIN")"
+fi
+
+RESIGNED_BIN="$SCRIPT_DIR/../claude-native-resigned"
+
+if codesign -d -vvv "$REAL_BIN" 2>&1 | grep -q 'flags=.*runtime'; then
+    if ! codesign -d --entitlements - "$REAL_BIN" 2>&1 | grep -q 'allow-dyld-environment-variables'; then
+        if [ -f "$RESIGNED_BIN" ]; then
+            echo -e "${GREEN}[claude-safe] Using re-signed binary: $RESIGNED_BIN${NC}" >&2
+            REAL_BIN="$RESIGNED_BIN"
+        else
+            echo -e "${RED}[claude-safe] ERROR: $REAL_BIN has hardened runtime without DYLD entitlement${NC}" >&2
+            echo -e "${RED}[claude-safe] macOS will silently strip DYLD_INSERT_LIBRARIES - the filter will NOT load${NC}" >&2
+            echo "" >&2
+            echo "Fix: run ./scripts/claude-resign first" >&2
+            exit 1
+        fi
+    fi
+fi
+
 # Launch Claude with DYLD_INSERT_LIBRARIES
 echo -e "${GREEN}[claude-safe] Filter library: $FILTER_LIB${NC}" >&2
-echo -e "${GREEN}[claude-safe] Claude binary: $CLAUDE_BIN${NC}" >&2
+echo -e "${GREEN}[claude-safe] Claude binary: $REAL_BIN${NC}" >&2
 echo -e "${GREEN}[claude-safe] Starting Claude Code with injection filtering...${NC}" >&2
 echo "" >&2
 
 export DYLD_INSERT_LIBRARIES="$FILTER_LIB"
-exec "$CLAUDE_BIN" "$@"
+exec "$REAL_BIN" "$@"

@@ -20,7 +20,7 @@ from pathlib import Path
 scanner = None
 scanner_lock = threading.Lock()
 
-DEFAULT_SOCKET = "/tmp/content-filter-scanner.sock"
+DEFAULT_SOCKET = "/tmp/context-filter-scanner.sock"
 
 
 def get_scanner():
@@ -83,6 +83,7 @@ def scan_content(content: str) -> dict:
 
 def handle_client(conn):
     """Handle a single client connection."""
+    print("[scanner] Client connected", file=sys.stderr)
     try:
         # Protocol:
         # Request: 4-byte length (big-endian) + content bytes
@@ -111,7 +112,10 @@ def handle_client(conn):
                 # Decode and scan
                 try:
                     text = content.decode("utf-8", errors="replace")
+                    preview = text[:80].replace('\n', ' ')
+                    print(f"[scanner] Scanning {content_length} bytes: {preview}...", file=sys.stderr)
                     response = scan_content(text)
+                    print(f"[scanner] Result: injection={response.get('is_injection')}, risk={response.get('risk_score', 0):.2f}", file=sys.stderr)
                 except Exception as e:
                     response = {"error": f"Decode error: {e}"}
             else:

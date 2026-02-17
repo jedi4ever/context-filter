@@ -30,6 +30,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <arpa/inet.h>  /* For htonl/ntohl */
+#include <sys/syscall.h> /* For raw syscalls (needed when interposing $NOCANCEL) */
 
 /* Configuration */
 #define MAX_TRACKED_FDS 4096
@@ -38,7 +39,7 @@
 #define LOG_TO_STDERR 1
 
 /* ML Scanner sidecar configuration */
-#define SCANNER_SOCKET_PATH "/tmp/content-filter-scanner.sock"
+#define SCANNER_SOCKET_PATH "/tmp/context-filter-scanner.sock"
 #define SCANNER_TIMEOUT_SEC 5
 #define ML_RISK_THRESHOLD 0.5  /* Risk score above this = injection */
 #define USE_ML_SCANNER 1       /* Set to 0 to disable ML scanner */
@@ -108,9 +109,23 @@ static int initialized = 0;
  * - read$NOCANCEL, pread$NOCANCEL, close$NOCANCEL: non-cancellation variants
  */
 static int (*real_open)(const char *pathname, int flags, mode_t mode) = NULL;
-static ssize_t (*real_read)(int fd, void *buf, size_t count) = NULL;
-static ssize_t (*real_pread)(int fd, void *buf, size_t count, off_t offset) = NULL;
-static int (*real_close)(int fd) = NULL;
+static int (*real_openat)(int dirfd, const char *pathname, int flags, mode_t mode) = NULL;
+static int (*real_openat_nocancel)(int dirfd, const char *pathname, int flags, mode_t mode) = NULL;
+
+/*
+ * Raw syscall wrappers for read/pread/close.
+ * We interpose both standard and $NOCANCEL variants, so there's no
+ * safe libc symbol left to call. Use raw syscalls instead.
+ */
+static inline ssize_t raw_read(int fd, void *buf, size_t count) {
+    return syscall(SYS_read, fd, buf, count);
+}
+static inline ssize_t raw_pread(int fd, void *buf, size_t count, off_t offset) {
+    return syscall(SYS_pread, fd, buf, count, offset);
+}
+static inline int raw_close(int fd) {
+    return (int)syscall(SYS_close, fd);
+}
 
 /*
  * Detection patterns - generated from config/patterns.json at build time.
@@ -129,6 +144,7 @@ static void log_msg(const char *fmt, ...) {
     fprintf(stderr, "[context-filter] ");
     vfprintf(stderr, fmt, args);
     fprintf(stderr, "\n");
+    fflush(stderr);
     va_end(args);
 }
 
@@ -141,8 +157,13 @@ typedef struct {
 
 /* Connect to ML scanner sidecar with timeout */
 static int connect_to_scanner(void) {
+    log_msg("Connecting to ML scanner (%s)...", SCANNER_SOCKET_PATH);
+
     int sock = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (sock < 0) return -1;
+    if (sock < 0) {
+        log_msg("  socket() failed: %s", strerror(errno));
+        return -1;
+    }
 
     /* Set send/receive timeout */
     struct timeval tv;
@@ -157,10 +178,12 @@ static int connect_to_scanner(void) {
     strncpy(addr.sun_path, SCANNER_SOCKET_PATH, sizeof(addr.sun_path) - 1);
 
     if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        log_msg("  connect() failed: %s", strerror(errno));
         close(sock);
         return -1;
     }
 
+    log_msg("  Connected (fd=%d)", sock);
     return sock;
 }
 
@@ -307,20 +330,31 @@ static void init(void) {
      * - read$NOCANCEL, pread$NOCANCEL, close$NOCANCEL: non-cancellation-point variants
      */
     real_open = dlsym(RTLD_DEFAULT, "__open");
-    real_read = dlsym(RTLD_DEFAULT, "read$NOCANCEL");
-    real_pread = dlsym(RTLD_DEFAULT, "pread$NOCANCEL");
-    real_close = dlsym(RTLD_DEFAULT, "close$NOCANCEL");
+    real_openat = dlsym(RTLD_DEFAULT, "__openat");
+    real_openat_nocancel = dlsym(RTLD_DEFAULT, "__openat_nocancel");
+    /* read/pread/close use raw syscalls since we interpose both
+     * the standard and $NOCANCEL variants, leaving no safe libc symbol */
 
-    if (!real_open || !real_read || !real_close) {
-        log_msg("FATAL: Failed to resolve libc functions via dlsym");
-        log_msg("  __open=%p read$NOCANCEL=%p close$NOCANCEL=%p",
-                (void*)real_open, (void*)real_read, (void*)real_close);
+    if (!real_open) {
+        log_msg("FATAL: Failed to resolve __open via dlsym");
         return;
     }
 
     /* DON'T call init_patterns() here - it causes crashes on macOS DYLD load */
     initialized = 1;
     log_msg("Initialized (macOS DYLD_INTERPOSE) - filtering CLAUDE.md and skill files");
+    log_msg("  __open=%p __openat=%p __openat_nocancel=%p (read/pread/close via raw syscall)",
+            (void*)real_open, (void*)real_openat, (void*)real_openat_nocancel);
+
+#if USE_ML_SCANNER
+    /* Check scanner connectivity at startup */
+    int sock = connect_to_scanner();
+    if (sock >= 0) {
+        raw_close(sock);
+    } else {
+        log_msg("ML Scanner not running (will use regex fallback)");
+    }
+#endif
 }
 
 /* Check if path should be filtered */
@@ -346,9 +380,11 @@ static int should_filter_path(const char *path) {
         return 1;
     }
     
-    /* Match files in .claude/ directories */
+    /* Match files in .claude/ directories (but skip cache - not user-controlled) */
     if (strstr(resolved, "/.claude/") != NULL) {
-        /* Check for markdown files that might contain instructions */
+        if (strstr(resolved, "/.claude/cache/") != NULL) {
+            return 0;
+        }
         size_t len = strlen(resolved);
         if (len > 3 && strcasecmp(resolved + len - 3, ".md") == 0) {
             return 1;
@@ -605,6 +641,16 @@ int my_open(const char *pathname, int flags, ...) {
          * (e.g., when app uses close$NOCANCEL directly) */
         cleanup_tracked_fd(fd);
 
+#ifdef DEBUG
+        /* Log .md file opens for debugging */
+        if (pathname) {
+            size_t plen = strlen(pathname);
+            if (plen > 3 && strcasecmp(pathname + plen - 3, ".md") == 0) {
+                log_msg("DEBUG open(): %s (fd=%d)", pathname, fd);
+            }
+        }
+#endif
+
         if (should_filter_path(pathname)) {
             pthread_mutex_lock(&fd_mutex);
             tracked_fds[fd].path = strdup(pathname);
@@ -623,13 +669,109 @@ int my_open(const char *pathname, int flags, ...) {
 }
 DYLD_INTERPOSE(my_open, open)
 
+/* Hooked openat() - modern runtimes (Bun, etc.) use openat instead of open */
+int my_openat(int dirfd, const char *pathname, int flags, ...) {
+    mode_t mode = 0;
+
+    if (flags & O_CREAT) {
+        va_list args;
+        va_start(args, flags);
+        mode = va_arg(args, int);
+        va_end(args);
+    }
+
+    if (!initialized) init();
+
+    int fd;
+    if (real_openat) {
+        fd = real_openat(dirfd, pathname, flags, mode);
+    } else {
+        /* fallback: if __openat not found, try open for absolute paths */
+        fd = real_open(pathname, flags, mode);
+    }
+
+    if (fd >= 0 && fd < MAX_TRACKED_FDS) {
+        cleanup_tracked_fd(fd);
+
+#ifdef DEBUG
+        if (pathname) {
+            size_t plen = strlen(pathname);
+            if (plen > 3 && strcasecmp(pathname + plen - 3, ".md") == 0) {
+                log_msg("DEBUG openat(dirfd=%d): %s (fd=%d)", dirfd, pathname, fd);
+            }
+        }
+#endif
+
+        if (should_filter_path(pathname)) {
+            pthread_mutex_lock(&fd_mutex);
+            tracked_fds[fd].path = strdup(pathname);
+            tracked_fds[fd].needs_filter = 1;
+            tracked_fds[fd].filter_applied = 0;
+            tracked_fds[fd].buffer = NULL;
+            tracked_fds[fd].buffer_size = 0;
+            tracked_fds[fd].buffer_used = 0;
+            pthread_mutex_unlock(&fd_mutex);
+
+            log_msg("Tracking: %s (fd=%d, via openat)", pathname, fd);
+        }
+    }
+
+    return fd;
+}
+DYLD_INTERPOSE(my_openat, openat)
+
+/* Hooked openat$NOCANCEL - Bun runtime uses this variant */
+extern int openat_nocancel(int, const char *, int, ...) __asm__("_openat$NOCANCEL");
+
+int my_openat_nocancel(int dirfd, const char *pathname, int flags, ...) {
+    mode_t mode = 0;
+
+    if (flags & O_CREAT) {
+        va_list args;
+        va_start(args, flags);
+        mode = va_arg(args, int);
+        va_end(args);
+    }
+
+    if (!initialized) init();
+
+    int fd;
+    if (real_openat_nocancel) {
+        fd = real_openat_nocancel(dirfd, pathname, flags, mode);
+    } else if (real_openat) {
+        fd = real_openat(dirfd, pathname, flags, mode);
+    } else {
+        fd = real_open(pathname, flags, mode);
+    }
+
+    if (fd >= 0 && fd < MAX_TRACKED_FDS) {
+        cleanup_tracked_fd(fd);
+
+        if (should_filter_path(pathname)) {
+            pthread_mutex_lock(&fd_mutex);
+            tracked_fds[fd].path = strdup(pathname);
+            tracked_fds[fd].needs_filter = 1;
+            tracked_fds[fd].filter_applied = 0;
+            tracked_fds[fd].buffer = NULL;
+            tracked_fds[fd].buffer_size = 0;
+            tracked_fds[fd].buffer_used = 0;
+            pthread_mutex_unlock(&fd_mutex);
+
+            log_msg("Tracking: %s (fd=%d, via openat$NOCANCEL)", pathname, fd);
+        }
+    }
+
+    return fd;
+}
+DYLD_INTERPOSE(my_openat_nocancel, openat_nocancel)
+
 /* Hooked read() - where the filtering magic happens - uses DYLD_INTERPOSE */
 ssize_t my_read(int fd, void *buf, size_t count) {
     if (!initialized) init();
 
     /* Fast path: skip entirely for untracked fds (stdin, etc.) */
     if (fd < 0 || fd >= MAX_TRACKED_FDS || !tracked_fds[fd].needs_filter) {
-        return real_read(fd, buf, count);
+        return raw_read(fd, buf, count);
     }
 
     /* Check if we already have filtered content ready */
@@ -637,7 +779,7 @@ ssize_t my_read(int fd, void *buf, size_t count) {
 
     if (!tracked_fds[fd].needs_filter) {
         pthread_mutex_unlock(&fd_mutex);
-        return real_read(fd, buf, count);
+        return raw_read(fd, buf, count);
     }
 
     if (tracked_fds[fd].filter_applied && tracked_fds[fd].buffer) {
@@ -673,14 +815,14 @@ ssize_t my_read(int fd, void *buf, size_t count) {
         tracked_fds[fd].needs_filter = 0;
         pthread_mutex_unlock(&fd_mutex);
         lseek(fd, current_pos, SEEK_SET);
-        return real_read(fd, buf, count);
+        return raw_read(fd, buf, count);
     }
 
     /* Read entire file WITHOUT holding mutex */
     char *file_content = malloc(file_size + 1);
     ssize_t total_read = 0;
     while (total_read < file_size) {
-        ssize_t r = real_read(fd, file_content + total_read, file_size - total_read);
+        ssize_t r = raw_read(fd, file_content + total_read, file_size - total_read);
         if (r <= 0) break;
         total_read += r;
     }
@@ -754,13 +896,20 @@ ssize_t my_read(int fd, void *buf, size_t count) {
 }
 DYLD_INTERPOSE(my_read, read)
 
+/* Hooked read$NOCANCEL - Bun uses this variant */
+extern ssize_t read_nocancel(int, void *, size_t) __asm__("_read$NOCANCEL");
+ssize_t my_read_nocancel(int fd, void *buf, size_t count) {
+    return my_read(fd, buf, count);
+}
+DYLD_INTERPOSE(my_read_nocancel, read_nocancel)
+
 /* Hooked pread() - uses DYLD_INTERPOSE */
 ssize_t my_pread(int fd, void *buf, size_t count, off_t offset) {
     if (!initialized) init();
 
     /* Fast path: skip mutex entirely for untracked fds */
     if (fd < 0 || fd >= MAX_TRACKED_FDS || !tracked_fds[fd].needs_filter) {
-        return real_pread(fd, buf, count, offset);
+        return raw_pread(fd, buf, count, offset);
     }
 
     /* For tracked files, use our filtered buffer */
@@ -768,6 +917,13 @@ ssize_t my_pread(int fd, void *buf, size_t count, off_t offset) {
     return my_read(fd, buf, count);
 }
 DYLD_INTERPOSE(my_pread, pread)
+
+/* Hooked pread$NOCANCEL - Bun uses this variant */
+extern ssize_t pread_nocancel(int, void *, size_t, off_t) __asm__("_pread$NOCANCEL");
+ssize_t my_pread_nocancel(int fd, void *buf, size_t count, off_t offset) {
+    return my_pread(fd, buf, count, offset);
+}
+DYLD_INTERPOSE(my_pread_nocancel, pread_nocancel)
 
 /* Hooked close() - uses DYLD_INTERPOSE */
 int my_close(int fd) {
@@ -777,9 +933,16 @@ int my_close(int fd) {
     if (fd >= 0 && fd < MAX_TRACKED_FDS && tracked_fds[fd].needs_filter) {
         cleanup_tracked_fd(fd);
     }
-    return real_close(fd);
+    return raw_close(fd);
 }
 DYLD_INTERPOSE(my_close, close)
+
+/* Hooked close$NOCANCEL - Bun uses this variant */
+extern int close_nocancel(int) __asm__("_close$NOCANCEL");
+int my_close_nocancel(int fd) {
+    return my_close(fd);
+}
+DYLD_INTERPOSE(my_close_nocancel, close_nocancel)
 
 /* Library constructor - runs when loaded */
 __attribute__((constructor))

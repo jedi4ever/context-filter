@@ -10,9 +10,9 @@ PROJECT_ROOT="$SCRIPT_DIR/../.."
 DYLIB_PATH="$PROJECT_ROOT/cf-module/dist/libcontextfilter.dylib"
 
 # Shared socket - the C library connects here
-SOCKET="/tmp/content-filter-scanner.sock"
-PID_FILE="/tmp/content-filter-scanner.pid"
-TYPE_FILE="/tmp/content-filter-scanner.type"
+SOCKET="/tmp/context-filter-scanner.sock"
+PID_FILE="/tmp/context-filter-scanner.pid"
+TYPE_FILE="/tmp/context-filter-scanner.type"
 
 # Colors
 RED='\033[0;31m'
@@ -55,7 +55,18 @@ resolve_scanner() {
 }
 
 do_start() {
-    local type="${1:-llmguard}"
+    local daemonize=false
+    local type="nemo"
+
+    # Parse flags and type
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -d) daemonize=true ;;
+            *)  type="$1" ;;
+        esac
+        shift
+    done
+
     resolve_scanner "$type" || return 1
 
     # Stop existing scanner if running a different type
@@ -80,22 +91,27 @@ do_start() {
         return 1
     fi
 
-    "$PYTHON" "$SCANNER_SCRIPT" --socket "$SOCKET" &
-    local pid=$!
-    echo "$pid" > "$PID_FILE"
-    echo "$type" > "$TYPE_FILE"
+    if [ "$daemonize" = true ]; then
+        "$PYTHON" "$SCANNER_SCRIPT" --socket "$SOCKET" &
+        local pid=$!
+        echo "$pid" > "$PID_FILE"
+        echo "$type" > "$TYPE_FILE"
 
-    for i in $(seq 1 "$WAIT_SECS"); do
-        if [ -S "$SOCKET" ]; then
-            echo -e "${GREEN}$LABEL scanner started (PID: $pid, socket: $SOCKET)${NC}"
-            return 0
-        fi
-        sleep 0.5
-    done
+        for i in $(seq 1 "$WAIT_SECS"); do
+            if [ -S "$SOCKET" ]; then
+                echo -e "${GREEN}$LABEL scanner started (PID: $pid, socket: $SOCKET)${NC}"
+                return 0
+            fi
+            sleep 0.5
+        done
 
-    echo -e "${RED}$LABEL scanner failed to start${NC}"
-    rm -f "$PID_FILE" "$TYPE_FILE"
-    return 1
+        echo -e "${RED}$LABEL scanner failed to start${NC}"
+        rm -f "$PID_FILE" "$TYPE_FILE"
+        return 1
+    else
+        echo "$type" > "$TYPE_FILE"
+        exec "$PYTHON" "$SCANNER_SCRIPT" --socket "$SOCKET"
+    fi
 }
 
 do_stop() {
@@ -117,6 +133,48 @@ do_stop() {
     pkill -f "llmguard_scanner.py|nemo_scanner.py" 2>/dev/null
     rm -f "$SOCKET" "$PID_FILE" "$TYPE_FILE"
     echo -e "${YELLOW}Scanner stopped (cleanup)${NC}"
+}
+
+do_download() {
+    local type="${1:-nemo}"
+    resolve_scanner "$type" || return 1
+
+    PYTHON=$(get_python)
+
+    if ! "$PYTHON" -c "import $PYTHON_MODULE" 2>/dev/null; then
+        echo -e "${RED}Error: $PYTHON_MODULE not installed${NC}"
+        echo "Install with: pip install -r cf-scanner/requirements.txt"
+        return 1
+    fi
+
+    echo -e "${GREEN}Downloading $LABEL model...${NC}"
+
+    case "$type" in
+        llmguard)
+            "$PYTHON" -c "
+from llm_guard.input_scanners import PromptInjection
+from llm_guard.input_scanners.prompt_injection import MatchType
+print('Loading model...')
+scanner = PromptInjection(threshold=0.5, match_type=MatchType.FULL)
+print('Model ready.')
+"
+            ;;
+        nemo)
+            "$PYTHON" -c "
+from nemoguardrails.library.jailbreak_detection.heuristics import checks
+print('Loading model...')
+checks.check_jailbreak_length_per_perplexity('test', 89.79)
+print('Model ready.')
+"
+            ;;
+    esac
+
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}$LABEL model downloaded successfully${NC}"
+    else
+        echo -e "${RED}$LABEL model download failed${NC}"
+        return 1
+    fi
 }
 
 do_status() {
@@ -146,21 +204,27 @@ usage() {
     echo "Usage: $0 <command> [type]"
     echo ""
     echo "Commands:"
-    echo "  start [type]   Start scanner sidecar (default: llmguard)"
-    echo "  stop           Stop the running scanner"
-    echo "  status         Show scanner status"
+    echo "  download [type]  Download ML model (default: nemo)"
+    echo "  start [-d] [type] Start scanner in foreground (default: nemo)"
+    echo "                     -d  run as background daemon"
+    echo "  stop             Stop the running scanner"
+    echo "  status           Show scanner status"
     echo ""
     echo "Scanner types:"
-    echo "  llmguard       LLM Guard PromptInjection scanner (default)"
-    echo "  nemo           NeMo Guardrails perplexity heuristics"
+    echo "  nemo           NeMo Guardrails perplexity heuristics (default)"
+    echo "  llmguard       LLM Guard PromptInjection scanner"
     echo ""
     echo "Only one scanner runs at a time on $SOCKET."
     echo "Starting a different type auto-stops the current one."
 }
 
 case "${1:-}" in
+    download)
+        do_download "${2:-nemo}"
+        ;;
     start)
-        do_start "${2:-llmguard}"
+        shift
+        do_start "$@"
         ;;
     stop)
         do_stop

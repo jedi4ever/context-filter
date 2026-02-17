@@ -1,0 +1,96 @@
+#!/bin/bash
+#
+# claude-resign - Copy and re-sign the Claude binary to allow DYLD_INSERT_LIBRARIES
+#
+# Claude Code ships as a hardened runtime binary which causes macOS to
+# silently strip DYLD_INSERT_LIBRARIES. This script creates a local
+# re-signed copy with the allow-dyld-environment-variables entitlement.
+#
+# Usage: claude-resign
+#
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OUTPUT_DIR="$SCRIPT_DIR/../"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+# Find Claude binary
+CLAUDE_BIN=""
+if command -v claude &> /dev/null; then
+    CLAUDE_BIN="$(command -v claude)"
+elif [ -f "$HOME/.local/bin/claude" ]; then
+    CLAUDE_BIN="$HOME/.local/bin/claude"
+elif [ -f "/usr/local/bin/claude" ]; then
+    CLAUDE_BIN="/usr/local/bin/claude"
+elif [ -f "/opt/homebrew/bin/claude" ]; then
+    CLAUDE_BIN="/opt/homebrew/bin/claude"
+else
+    echo -e "${RED}Error: Cannot find claude binary${NC}" >&2
+    exit 1
+fi
+
+# Resolve symlinks
+REAL_BIN="$CLAUDE_BIN"
+if [ -L "$CLAUDE_BIN" ]; then
+    REAL_BIN="$(readlink -f "$CLAUDE_BIN")"
+fi
+
+echo "[claude-resign] Source: $REAL_BIN"
+
+# Check if it actually needs re-signing
+if ! codesign -d -vvv "$REAL_BIN" 2>&1 | grep -q 'flags=.*runtime'; then
+    echo -e "${GREEN}[claude-resign] No hardened runtime — DYLD_INSERT_LIBRARIES should work as-is${NC}"
+    exit 0
+fi
+
+if codesign -d --entitlements - "$REAL_BIN" 2>&1 | grep -q 'allow-dyld-environment-variables'; then
+    echo -e "${GREEN}[claude-resign] Already has allow-dyld-environment-variables entitlement${NC}"
+    exit 0
+fi
+
+echo -e "${YELLOW}[claude-resign] Hardened runtime without DYLD entitlement — re-signing...${NC}"
+
+# Ensure output dir exists
+mkdir -p "$OUTPUT_DIR"
+
+NATIVE_BIN="$OUTPUT_DIR/claude-native"
+RESIGNED_BIN="$OUTPUT_DIR/claude-native-resigned"
+ENTITLEMENTS_FILE="$OUTPUT_DIR/entitlements.plist"
+
+# Copy original
+echo "[claude-resign] Copying to $NATIVE_BIN"
+cp "$REAL_BIN" "$NATIVE_BIN"
+
+# Copy for re-signing
+cp "$NATIVE_BIN" "$RESIGNED_BIN"
+
+# Write entitlements (preserve original + add DYLD)
+cat > "$ENTITLEMENTS_FILE" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key><true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+    <key>com.apple.security.cs.disable-library-validation</key><true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key><true/>
+</dict>
+</plist>
+PLIST
+
+# Re-sign
+codesign --remove-signature "$RESIGNED_BIN"
+codesign --sign - --entitlements "$ENTITLEMENTS_FILE" "$RESIGNED_BIN"
+
+echo ""
+echo -e "${GREEN}[claude-resign] Done!${NC}"
+echo "  Original:  $NATIVE_BIN"
+echo "  Re-signed: $RESIGNED_BIN"
+echo ""
+echo "Verify:"
+echo "  codesign -d --entitlements - $RESIGNED_BIN"

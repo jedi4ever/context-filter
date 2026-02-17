@@ -24,7 +24,7 @@ import threading
 checks_module = None
 checks_lock = threading.Lock()
 
-DEFAULT_SOCKET = "/tmp/claude-nemo-scanner.sock"
+DEFAULT_SOCKET = "/tmp/context-filter-scanner.sock"
 
 # Thresholds from NeMo defaults
 LENGTH_PER_PERPLEXITY_THRESHOLD = 89.79
@@ -116,6 +116,7 @@ def scan_content(content: str) -> dict:
 
 def handle_client(conn):
     """Handle a single client connection."""
+    print("[nemo] Client connected", file=sys.stderr)
     try:
         # Protocol:
         # Request: 4-byte length (big-endian) + content bytes
@@ -144,7 +145,10 @@ def handle_client(conn):
                 # Decode and scan
                 try:
                     text = content.decode("utf-8", errors="replace")
+                    preview = text[:80].replace('\n', ' ')
+                    print(f"[nemo] Scanning {content_length} bytes: {preview}...", file=sys.stderr)
                     response = scan_content(text)
+                    print(f"[nemo] Result: injection={response.get('is_injection')}, risk={response.get('risk_score', 0):.2f}", file=sys.stderr)
                 except Exception as e:
                     response = {"error": f"Decode error: {e}"}
             else:

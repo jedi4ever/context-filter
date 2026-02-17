@@ -1,7 +1,7 @@
 # Makefile for cf-module (macOS DYLD interposition library)
 
 CC = clang
-CFLAGS = -Wall -Wextra -fPIC -O2 -g -Isrc
+CFLAGS = -Wall -Wextra -fPIC -O2 -g -Isrc -Wno-deprecated-declarations
 LDFLAGS = -dynamiclib -ldl
 
 # Directories

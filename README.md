@@ -28,26 +28,31 @@ source .venv/bin/activate
 # install requirements , can take a while
 pip install -r cf-scanner/requirements.txt
 
-# Starting the ML daemon - this can take a while as it might downloading/loading the model
-./cf-scanner/bin/cfscanner.sh start          # default: llmguard
-./cf-scanner/bin/cfscanner.sh start nemo     # alternative: nemo
-./cf-scanner/bin/cfscanner.sh status         # check what's running
+# Download the ML model (one-time, can take a while)
+./cf-scanner/bin/cfscanner.sh download            # default: nemo
+./cf-scanner/bin/cfscanner.sh download llmguard   # alternative: llmguard
+
+# Start the ML scanner (foreground, Ctrl-C to stop)
+./cf-scanner/bin/cfscanner.sh start               # default: nemo
+./cf-scanner/bin/cfscanner.sh start llmguard      # alternative: llmguard
+./cf-scanner/bin/cfscanner.sh start -d            # run as background daemon
+./cf-scanner/bin/cfscanner.sh status              # check what's running
 ```
 
 ```shell
 Starting LLM Guard scanner...
-[scanner] Starting injection scanner on /tmp/content-filter-scanner.sock
+[scanner] Starting injection scanner on /tmp/context-filter-scanner.sock
 [scanner] Loading LLM Guard PromptInjection scanner...
 2026-02-17 19:49:37 [debug    ] Initialized classification model device=device(type='mps') model=Model(path='protectai/deberta-v3-base-prompt-injection-v2', subfolder='', revision='89b085cd330414d3e7d9dd787870f315957e1e9f', onnx_path='ProtectAI/deberta-v3-base-prompt-injection-v2', onnx_revision='89b085cd330414d3e7d9dd787870f315957e1e9f', onnx_subfolder='onnx', onnx_filename='model.onnx', kwargs={}, pipeline_kwargs={'batch_size': 1, 'device': device(type='mps'), 'return_token_type_ids': False, 'max_length': 512, 'truncation': True}, tokenizer_kwargs={})
 Device set to use mps
 [scanner] Scanner loaded successfully
-[scanner] Listening on /tmp/content-filter-scanner.sock
-LLM Guard scanner started (PID: 69182, socket: /tmp/content-filter-scanner.sock)
+[scanner] Listening on /tmp/context-filter-scanner.sock
+LLM Guard scanner started (PID: 69182, socket: /tmp/context-filter-scanner.sock)
 ```
 
 ```shell
 Starting NeMo Guardrails scanner...
-[nemo] Starting NeMo scanner on /tmp/content-filter-scanner.sock
+[nemo] Starting NeMo scanner on /tmp/context-filter-scanner.sock
 [nemo] Loading NeMo jailbreak heuristics (GPT-2 model)...
 model.safetensors:   0%|                                                                                        | 0.00/3.25G [00:00<?, ?B/s]
 ```
