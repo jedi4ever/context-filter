@@ -86,36 +86,45 @@ def handle_client(conn):
     print("[scanner] Client connected", file=sys.stderr)
     try:
         # Protocol:
-        # Request: 4-byte length (big-endian) + content bytes
+        # Request: 4-byte filename_length + filename + 4-byte content_length + content
         # Response: 4-byte length (big-endian) + JSON response bytes
 
-        # Read length prefix
+        def recv_exact(n):
+            """Read exactly n bytes from connection."""
+            data = b""
+            while len(data) < n:
+                chunk = conn.recv(min(65536, n - len(data)))
+                if not chunk:
+                    break
+                data += chunk
+            return data
+
+        # Read filename
+        fname_len_data = conn.recv(4)
+        if len(fname_len_data) < 4:
+            return
+        fname_length = struct.unpack(">I", fname_len_data)[0]
+        filename = recv_exact(fname_length).decode("utf-8", errors="replace") if fname_length > 0 else ""
+
+        # Read content length
         length_data = conn.recv(4)
         if len(length_data) < 4:
             return
-
         content_length = struct.unpack(">I", length_data)[0]
 
         # Sanity check
         if content_length > 10 * 1024 * 1024:  # 10MB max
             response = {"error": "Content too large"}
         else:
-            # Read content
-            content = b""
-            while len(content) < content_length:
-                chunk = conn.recv(min(65536, content_length - len(content)))
-                if not chunk:
-                    break
-                content += chunk
+            content = recv_exact(content_length)
 
             if len(content) == content_length:
                 # Decode and scan
                 try:
                     text = content.decode("utf-8", errors="replace")
-                    preview = text[:80].replace('\n', ' ')
-                    print(f"[scanner] Scanning {content_length} bytes: {preview}...", file=sys.stderr)
+                    print(f"[scanner] Scanning: {filename} ({content_length} bytes)", file=sys.stderr)
                     response = scan_content(text)
-                    print(f"[scanner] Result: injection={response.get('is_injection')}, risk={response.get('risk_score', 0):.2f}", file=sys.stderr)
+                    print(f"[scanner] Result: {filename} injection={response.get('is_injection')}, risk={response.get('risk_score', 0):.2f}", file=sys.stderr)
                 except Exception as e:
                     response = {"error": f"Decode error: {e}"}
             else:

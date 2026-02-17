@@ -188,7 +188,7 @@ static int connect_to_scanner(void) {
 }
 
 /* Query ML scanner for injection detection */
-static MLScanResult query_ml_scanner(const char *content, size_t len) {
+static MLScanResult query_ml_scanner(const char *content, size_t len, const char *filepath) {
     MLScanResult result = {0, 0.0, NULL};
 
     int sock = connect_to_scanner();
@@ -197,11 +197,24 @@ static MLScanResult query_ml_scanner(const char *content, size_t len) {
         return result;
     }
 
-    /* Send: 4-byte length (big-endian) + content */
+    /* Send: 4-byte filename_length + filename + 4-byte content_length + content */
+    const char *fname = filepath ? filepath : "";
+    uint32_t fname_len = htonl((uint32_t)strlen(fname));
+    if (send(sock, &fname_len, 4, 0) != 4) {
+        close(sock);
+        result.error = strdup("Failed to send filename length");
+        return result;
+    }
+    if (strlen(fname) > 0 && send(sock, fname, strlen(fname), 0) != (ssize_t)strlen(fname)) {
+        close(sock);
+        result.error = strdup("Failed to send filename");
+        return result;
+    }
+
     uint32_t net_len = htonl((uint32_t)len);
     if (send(sock, &net_len, 4, 0) != 4) {
         close(sock);
-        result.error = strdup("Failed to send length");
+        result.error = strdup("Failed to send content length");
         return result;
     }
 
@@ -468,7 +481,7 @@ static DetectionResult* detect_injections_regex(const char *content, size_t len)
 }
 
 /* Main detection function - tries ML scanner first, falls back to regex */
-static DetectionResult* detect_injections(const char *content, size_t len) {
+static DetectionResult* detect_injections(const char *content, size_t len, const char *filepath) {
     DetectionResult *result = malloc(sizeof(DetectionResult));
     result->detections = malloc(sizeof(Detection) * 32);
     result->count = 0;
@@ -477,7 +490,7 @@ static DetectionResult* detect_injections(const char *content, size_t len) {
 
 #if USE_ML_SCANNER
     /* Try ML scanner first */
-    MLScanResult ml_result = query_ml_scanner(content, len);
+    MLScanResult ml_result = query_ml_scanner(content, len, filepath);
 
     if (ml_result.error == NULL) {
         /* ML scanner succeeded */
@@ -829,7 +842,7 @@ ssize_t my_read(int fd, void *buf, size_t count) {
     file_content[total_read] = '\0';
 
     /* Scan for injections (also doesn't need mutex) */
-    DetectionResult *detections = detect_injections(file_content, total_read);
+    DetectionResult *detections = detect_injections(file_content, total_read, filepath);
 
     char *filtered_buffer = NULL;
     size_t filtered_size = 0;
