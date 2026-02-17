@@ -116,7 +116,6 @@ def scan_content(content: str) -> dict:
 
 def handle_client(conn):
     """Handle a single client connection."""
-    print("[nemo] Client connected", file=sys.stderr)
     try:
         # Protocol:
         # Request: 4-byte filename_length + filename + 4-byte content_length + content

@@ -157,11 +157,8 @@ typedef struct {
 
 /* Connect to ML scanner sidecar with timeout */
 static int connect_to_scanner(void) {
-    log_msg("Connecting to ML scanner (%s)...", SCANNER_SOCKET_PATH);
-
     int sock = socket(AF_UNIX, SOCK_STREAM, 0);
     if (sock < 0) {
-        log_msg("  socket() failed: %s", strerror(errno));
         return -1;
     }
 
@@ -178,12 +175,10 @@ static int connect_to_scanner(void) {
     strncpy(addr.sun_path, SCANNER_SOCKET_PATH, sizeof(addr.sun_path) - 1);
 
     if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        log_msg("  connect() failed: %s", strerror(errno));
         close(sock);
         return -1;
     }
 
-    log_msg("  Connected (fd=%d)", sock);
     return sock;
 }
 
@@ -359,15 +354,10 @@ static void init(void) {
     log_msg("  __open=%p __openat=%p __openat_nocancel=%p (read/pread/close via raw syscall)",
             (void*)real_open, (void*)real_openat, (void*)real_openat_nocancel);
 
-#if USE_ML_SCANNER
-    /* Check scanner connectivity at startup */
-    int sock = connect_to_scanner();
-    if (sock >= 0) {
-        raw_close(sock);
-    } else {
-        log_msg("ML Scanner not running (will use regex fallback)");
-    }
-#endif
+    /* Note: we don't probe the ML scanner here — every child process
+     * inherits DYLD_INSERT_LIBRARIES and runs init(), which would
+     * flood the scanner with empty connections. We'll discover scanner
+     * availability on the first real scan instead. */
 }
 
 /* Check if path should be filtered */
