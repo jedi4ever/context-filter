@@ -238,6 +238,68 @@ file ~/.local/bin/claude
 otool -l ~/.local/bin/claude | grep -i bun
 ```
 
+### 9. Bun Uses $NOCANCEL for read/pread/close Too
+
+Just like `openat$NOCANCEL`, Bun also uses `read$NOCANCEL`, `pread$NOCANCEL`, and `close$NOCANCEL` instead of their standard libc counterparts.
+
+**Discovery:**
+```bash
+nm -u ~/.local/bin/claude | grep -E '(read|close)'
+# _read$NOCANCEL
+# _pread$NOCANCEL
+# _close$NOCANCEL
+```
+
+**Interpose the same way as openat$NOCANCEL:**
+```c
+extern ssize_t read_nocancel(int, void *, size_t) __asm__("_read$NOCANCEL");
+ssize_t my_read_nocancel(int fd, void *buf, size_t count) {
+    return my_read(fd, buf, count);  /* delegate to main hook */
+}
+DYLD_INTERPOSE(my_read_nocancel, read_nocancel)
+```
+
+### 10. Infinite Recursion When Interposing Both Standard and $NOCANCEL Variants
+
+When you interpose *both* `read` and `read$NOCANCEL`, there is no safe libc function to call from inside your hook:
+
+- `dlsym(RTLD_DEFAULT, "read$NOCANCEL")` → returns your `my_read_nocancel`
+- `dlsym(RTLD_DEFAULT, "__read_nocancel")` → symbol doesn't exist on macOS
+- `dlsym(RTLD_NEXT, "read")` → returns your `my_read`
+
+Every libc path loops back to your hook → stack overflow → segfault.
+
+**Fix — raw syscalls:**
+```c
+#include <sys/syscall.h>
+
+static inline ssize_t raw_read(int fd, void *buf, size_t count) {
+    return syscall(SYS_read, fd, buf, count);
+}
+static inline ssize_t raw_pread(int fd, void *buf, size_t count, off_t offset) {
+    return syscall(SYS_pread, fd, buf, count, offset);
+}
+static inline int raw_close(int fd) {
+    return (int)syscall(SYS_close, fd);
+}
+```
+
+`syscall()` is deprecated since macOS 10.12 but still works. It's the only way to reach the kernel without going through any interposable libc symbol. Use `raw_read`/`raw_pread`/`raw_close` everywhere inside your hooks.
+
+### 11. Child Processes Inherit DYLD_INSERT_LIBRARIES
+
+When Claude Code spawns child processes (for tool calls, subcommands, etc.), each child inherits `DYLD_INSERT_LIBRARIES` and runs the library constructor. If the constructor probes external services (e.g., connecting to a scanner daemon), this creates a flood of empty connections.
+
+**Problem:**
+```c
+__attribute__((constructor))
+static void lib_init(void) {
+    init();  /* resolves symbols + probes scanner → every child process does this */
+}
+```
+
+**Fix:** Don't probe external services at startup. Discover availability lazily on the first real scan request.
+
 ## Path Matching Issues
 
 ### 6. Cache Directories Cause False Positives (2026-02-04)
