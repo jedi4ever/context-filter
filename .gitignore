@@ -1,0 +1,15 @@
+# Build artifacts
+cf-module/dist/
+cf-module/src/patterns_generated.h
+*.o
+
+# Python
+.venv/
+.venv*/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# macOS
+.DS_Store

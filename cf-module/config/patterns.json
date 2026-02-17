@@ -1,0 +1,146 @@
+[
+  {
+    "name": "ignore_instructions",
+    "pattern": "(ignore|disregard|forget|override|bypass|skip|don't follow|do not follow).{0,30}(previous|above|prior|earlier|all|any|system|initial).{0,20}(instruction|rule|guideline|constraint|restriction|prompt)",
+    "category": "Instruction Override",
+    "severity": "HIGH"
+  },
+  {
+    "name": "new_instructions",
+    "pattern": "(new|actual|real|true|correct|updated).{0,20}(instruction|rule|directive|command|order)",
+    "category": "Instruction Override",
+    "severity": "HIGH"
+  },
+  {
+    "name": "you_are_now",
+    "pattern": "(you are now|you're now|from now on|starting now|henceforth).{0,30}(free|unlimited|unrestricted|different|new)",
+    "category": "Instruction Override",
+    "severity": "HIGH"
+  },
+  {
+    "name": "pretend_no_rules",
+    "pattern": "(pretend|imagine|assume|act as if).{0,30}(no rules|no restrictions|no limitations|no guidelines|anything goes)",
+    "category": "Instruction Override",
+    "severity": "HIGH"
+  },
+  {
+    "name": "dan_jailbreak",
+    "pattern": "(DAN|D\\.A\\.N\\.|do anything now)",
+    "category": "Role-Playing/DAN",
+    "severity": "HIGH"
+  },
+  {
+    "name": "jailbreak_mode",
+    "pattern": "(jailbreak|jailbroken|developer mode|god mode|sudo mode|admin mode|root mode)",
+    "category": "Role-Playing/DAN",
+    "severity": "HIGH"
+  },
+  {
+    "name": "roleplay_unrestricted",
+    "pattern": "(roleplay|role-play|role play|act as|pretend to be|you are).{0,30}(unrestricted|unfiltered|uncensored|without limits|evil|malicious)",
+    "category": "Role-Playing/DAN",
+    "severity": "HIGH"
+  },
+  {
+    "name": "opposite_day",
+    "pattern": "(opposite day|opposite mode|reverse mode|do the opposite)",
+    "category": "Role-Playing/DAN",
+    "severity": "MEDIUM"
+  },
+  {
+    "name": "base64_instruction",
+    "pattern": "(decode|decrypt|deobfuscate|interpret).{0,20}(base64|b64|encoded|encrypted|hidden)",
+    "category": "Encoding/Obfuscation",
+    "severity": "MEDIUM"
+  },
+  {
+    "name": "rot13_cipher",
+    "pattern": "(rot13|rot-13|caesar cipher|decode this)",
+    "category": "Encoding/Obfuscation",
+    "severity": "MEDIUM"
+  },
+  {
+    "name": "hidden_text",
+    "pattern": "(hidden text|invisible text|zero-width|secret message|steganograph)",
+    "category": "Encoding/Obfuscation",
+    "severity": "MEDIUM"
+  },
+  {
+    "name": "system_prompt_leak",
+    "pattern": "(reveal|show|display|print|output|tell me).{0,30}(system prompt|initial prompt|original instruction|hidden instruction|secret instruction)",
+    "category": "Context Manipulation",
+    "severity": "HIGH"
+  },
+  {
+    "name": "context_injection",
+    "pattern": "(\\[SYSTEM\\]|\\[ADMIN\\]|\\[OVERRIDE\\]|\\[PRIORITY\\]|<\\|system\\|>|<\\|endoftext\\|>|<\\|im_start\\|>)",
+    "category": "Context Manipulation",
+    "severity": "CRITICAL"
+  },
+  {
+    "name": "fake_conversation",
+    "pattern": "(Human:|Assistant:|User:|AI:|Claude:).{0,50}(ignore|override|new instruction|actually)",
+    "category": "Context Manipulation",
+    "severity": "HIGH"
+  },
+  {
+    "name": "markdown_injection",
+    "pattern": "(```system|```instruction|```override|<!--.*ignore.*-->)",
+    "category": "Instruction Smuggling",
+    "severity": "HIGH"
+  },
+  {
+    "name": "xml_injection",
+    "pattern": "(<s>|</s>|<instruction>|<override>|<priority>|<admin>)",
+    "category": "Instruction Smuggling",
+    "severity": "HIGH"
+  },
+  {
+    "name": "prompt_terminator",
+    "pattern": "(END OF PROMPT|END SYSTEM|STOP INSTRUCTIONS|---END---|===END===)",
+    "category": "Instruction Smuggling",
+    "severity": "HIGH"
+  },
+  {
+    "name": "exfil_curl",
+    "pattern": "(curl|wget|fetch|http|https).{0,50}(secret|password|key|token|credential|api.?key|ssh|\\.env)",
+    "category": "Data Exfiltration",
+    "severity": "CRITICAL"
+  },
+  {
+    "name": "exfil_read_secrets",
+    "pattern": "(read|cat|type|get|access|retrieve).{0,30}(~/.ssh|~/.aws|\\.env|secret|credential|password|api.?key|\\.pem|\\.key)",
+    "category": "Data Exfiltration",
+    "severity": "CRITICAL"
+  },
+  {
+    "name": "send_to_server",
+    "pattern": "(send|post|upload|transmit|exfiltrate).{0,30}(server|endpoint|url|webhook|attacker)",
+    "category": "Data Exfiltration",
+    "severity": "CRITICAL"
+  },
+  {
+    "name": "rm_rf",
+    "pattern": "(rm\\s+-rf|rm\\s+-fr|rmdir|del\\s+/s|remove-item\\s+-recurse).{0,20}(/|~|\\$HOME|\\*)",
+    "category": "Destructive Command",
+    "severity": "CRITICAL"
+  },
+  {
+    "name": "format_disk",
+    "pattern": "(format|mkfs|dd\\s+if=).{0,20}(/dev/|disk|drive)",
+    "category": "Destructive Command",
+    "severity": "CRITICAL"
+  },
+  {
+    "name": "sudo_injection",
+    "pattern": "(sudo|su\\s+-|doas|runas|elevate).{0,30}(rm|chmod|chown|passwd|shadow)",
+    "category": "Privilege Escalation",
+    "severity": "HIGH"
+  },
+  {
+    "name": "chmod_dangerous",
+    "pattern": "chmod.{0,10}(777|\\+x|a\\+rwx).{0,30}(/|~)",
+    "category": "Privilege Escalation",
+    "severity": "HIGH"
+  }
+]

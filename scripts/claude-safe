@@ -1,0 +1,119 @@
+#!/bin/bash
+#
+# claude-safe - Launch Claude Code with prompt injection filtering (macOS)
+#
+# This wrapper uses DYLD_INSERT_LIBRARIES to intercept file reads to CLAUDE.md
+# and skill files, scanning for injection patterns and prepending warnings
+# when detected.
+#
+# Usage: claude-safe [claude arguments...]
+#
+# Requirements:
+#   - macOS 10.15+ (Catalina or later)
+#   - Node.js NOT in /usr/bin (use Homebrew or nvm)
+#   - SIP does not need to be disabled
+#
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_NAME="libcontextfilter.dylib"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+# Look for library in multiple locations
+if [ -f "$SCRIPT_DIR/../cf-module/dist/$LIB_NAME" ]; then
+    FILTER_LIB="$SCRIPT_DIR/../cf-module/dist/$LIB_NAME"
+elif [ -f "/usr/local/lib/$LIB_NAME" ]; then
+    FILTER_LIB="/usr/local/lib/$LIB_NAME"
+elif [ -f "$HOME/.local/lib/$LIB_NAME" ]; then
+    FILTER_LIB="$HOME/.local/lib/$LIB_NAME"
+else
+    echo -e "${RED}Error: Cannot find $LIB_NAME${NC}" >&2
+    echo "Build it with: make" >&2
+    echo "Or install with: sudo make install" >&2
+    exit 1
+fi
+
+# Find Claude Code binary
+CLAUDE_BIN=""
+if command -v claude &> /dev/null; then
+    CLAUDE_BIN="$(command -v claude)"
+elif [ -f "$HOME/.npm-global/bin/claude" ]; then
+    CLAUDE_BIN="$HOME/.npm-global/bin/claude"
+elif [ -f "/usr/local/bin/claude" ]; then
+    CLAUDE_BIN="/usr/local/bin/claude"
+elif [ -f "/opt/homebrew/bin/claude" ]; then
+    CLAUDE_BIN="/opt/homebrew/bin/claude"
+else
+    echo -e "${RED}Error: Cannot find claude binary${NC}" >&2
+    echo "Make sure Claude Code is installed: npm install -g @anthropic-ai/claude-code" >&2
+    exit 1
+fi
+
+# Check if we're on macOS
+if [ "$(uname)" != "Darwin" ]; then
+    echo -e "${RED}Error: This script is for macOS only.${NC}" >&2
+    echo "On Linux, use LD_PRELOAD=./libcontextfilter.so instead." >&2
+    exit 1
+fi
+
+# Check for SIP issues with the claude binary
+# If claude uses /usr/bin/env, we need to find node directly
+if head -1 "$CLAUDE_BIN" 2>/dev/null | grep -q '/usr/bin/env'; then
+    echo -e "${YELLOW}Warning: claude uses /usr/bin/env which is SIP-protected${NC}" >&2
+    
+    # Try to find node and run directly
+    NODE_BIN=""
+    if command -v node &> /dev/null; then
+        NODE_PATH="$(command -v node)"
+        # Check if node is SIP-protected
+        if [[ "$NODE_PATH" == /usr/bin/* ]]; then
+            echo -e "${RED}Error: Node.js is in /usr/bin which is SIP-protected${NC}" >&2
+            echo "Please install Node.js via Homebrew or nvm:" >&2
+            echo "  brew install node" >&2
+            echo "  or" >&2
+            echo "  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash" >&2
+            exit 1
+        fi
+        NODE_BIN="$NODE_PATH"
+    fi
+    
+    if [ -n "$NODE_BIN" ]; then
+        # Find the actual JS file
+        CLAUDE_JS=""
+        if [ -f "$CLAUDE_BIN" ]; then
+            # Extract the JS file path from the shebang or find it
+            CLAUDE_DIR="$(dirname "$CLAUDE_BIN")"
+            if [ -f "$CLAUDE_DIR/../lib/node_modules/@anthropic-ai/claude-code/cli.js" ]; then
+                CLAUDE_JS="$CLAUDE_DIR/../lib/node_modules/@anthropic-ai/claude-code/cli.js"
+            fi
+        fi
+        
+        if [ -n "$CLAUDE_JS" ]; then
+            echo -e "${GREEN}[claude-safe] Using direct node invocation to bypass SIP${NC}" >&2
+            echo -e "${GREEN}[claude-safe] Filter library: $FILTER_LIB${NC}" >&2
+            echo -e "${GREEN}[claude-safe] Node: $NODE_BIN${NC}" >&2
+            echo -e "${GREEN}[claude-safe] Claude: $CLAUDE_JS${NC}" >&2
+            echo "" >&2
+            
+            export DYLD_INSERT_LIBRARIES="$FILTER_LIB"
+            exec "$NODE_BIN" "$CLAUDE_JS" "$@"
+        fi
+    fi
+    
+    echo -e "${YELLOW}Warning: Could not find direct node path, trying anyway...${NC}" >&2
+fi
+
+# Launch Claude with DYLD_INSERT_LIBRARIES
+echo -e "${GREEN}[claude-safe] Filter library: $FILTER_LIB${NC}" >&2
+echo -e "${GREEN}[claude-safe] Claude binary: $CLAUDE_BIN${NC}" >&2
+echo -e "${GREEN}[claude-safe] Starting Claude Code with injection filtering...${NC}" >&2
+echo "" >&2
+
+export DYLD_INSERT_LIBRARIES="$FILTER_LIB"
+exec "$CLAUDE_BIN" "$@"

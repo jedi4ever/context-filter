@@ -1,0 +1,13 @@
+# NeMo Guardrails config for prompt injection detection
+# Uses jailbreak detection heuristics (no LLM required)
+
+rails:
+  input:
+    flows:
+      - jailbreak detection heuristics
+
+# Enable jailbreak detection heuristics
+jailbreak_detection:
+  server_endpoint: null  # Use local detection, no external server
+  length_per_perplexity_threshold: 89.79
+  prefix_suffix_perplexity_threshold: 1845.65

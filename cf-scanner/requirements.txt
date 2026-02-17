@@ -1,0 +1,11 @@
+# NOTE: llm-guard requires Python >=3.10,<3.13 (i.e. 3.10–3.12)
+#       nemoguardrails requires Python <3.13
+#
+# LLM Guard for prompt injection detection
+llm-guard>=0.3.14
+
+# NeMo Guardrails for prompt injection detection (alternative)
+nemoguardrails>=0.10.0
+
+# Optional: ONNX runtime for faster CPU inference
+# onnxruntime>=1.16.0
